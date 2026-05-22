@@ -11,9 +11,9 @@ AI. It wraps the public REST API documented at
 
 ## What it gives you
 
-53 tools covering every documented REST endpoint, both lens session
-output channels (WebSocket and SSE), and one high-level composite for
-the most common end-to-end flow.
+55 tools covering every documented REST endpoint, both lens session
+output channels (WebSocket and SSE), and **three high-level composites
+that handle the most common end-to-end flows in a single call**.
 
 | Group | Tools |
 | --- | --- |
@@ -22,7 +22,22 @@ the most common end-to-end flow.
 | Query (1) | `query` |
 | Batch jobs (14) | `batch_job_create`, `batch_job_list`, `batch_job_get`, `batch_job_cancel`, `batch_job_retry`, `batch_job_delete`, `batch_job_events`, `batch_job_progress`, `batch_job_inputs`, `batch_job_inputs_progress`, `batch_job_inputs_progress_counts`, `batch_job_inputs_progress_traces`, `batch_job_outputs`, `batch_queue` |
 | Batch registry (3) | `batch_pipeline_list`, `batch_pipeline_get`, `batch_pipeline_schema` |
+| Batch composites (2) | `batch_run_machine_state_classification`, `batch_run_activity_detection` |
 | Fine-tune (8) | `finetune_job_create`, `finetune_job_get`, `finetune_job_list`, `finetune_job_cancel`, `finetune_job_stop`, `finetune_job_delete`, `finetune_job_metrics`, `finetune_node_status` |
+
+### Choosing the right tool
+
+The platform exposes three modes (Lens session, Query, Batch). Each
+composite below picks the right one for a common task — pick the
+composite by **what you're trying to do**, not by transport.
+
+| Task | Composite tool | Mode under the hood |
+| --- | --- | --- |
+| Describe / analyze a video | `lens_session_run_video` | Lens session (SSE) |
+| Classify time-series with labeled references (KNN over Omega embeddings — bearing health, machine state, anomaly detection) | `batch_run_machine_state_classification` | Batch pipeline |
+| Generate text / narratives over a large JSONL dataset (log summarization, structured extraction) | `batch_run_activity_detection` | Batch pipeline |
+| Ask a Newton model a one-shot question on a small input | `query` | Direct `/query` |
+| Real-time camera / sensor streaming | `lens_session_create` + primitives | Lens session (WebSocket) |
 
 ### For most video / file-driven analysis: use the composite tool
 
@@ -231,19 +246,32 @@ query(
 )
 ```
 
-### Time-series classification via batch job
+### Time-series classification (one-call composite)
 
-```
-files_upload("/path/to/sensor_data.csv")
-batch_pipeline_schema("machine-state-classification")  # discover input ports
-batch_job_create(
-  name="hrv-stress-run-1",
-  pipeline_key="machine-state-classification",
-  inputs={"data": {"file_id": "<id from upload>"}},
+```python
+files_upload("/path/to/bearing_opt_slice.csv")
+files_upload("/path/to/bearing_healthy.csv")
+files_upload("/path/to/bearing_degraded.csv")
+
+batch_run_machine_state_classification(
+  inference_file_ids=["bearing_opt_slice.csv"],
+  n_shots=[
+    {"file_id": "bearing_healthy.csv",  "class_label": "healthy"},
+    {"file_id": "bearing_degraded.csv", "class_label": "degraded"},
+  ],
+  data_columns=["bearing_1", "bearing_2", "bearing_3", "bearing_4"],
+  # window_size=128, step_size=1, n_neighbors=11 by default
+  # (matches archetype-batch-examples-nasa-bearing optimized config)
 )
-batch_job_get("<job id>")
-batch_job_outputs("<job id>")  # presigned URLs, refresh as they expire
+# Returns {job_id, status, outputs: [{file_id, url, ...}], events, timed_out, ...}
+# Download outputs[*].url to get the per-window predictions (presigned, expire).
 ```
+
+`batch_run_activity_detection(data_file_ids=[...])` does the same for the
+`activity-detection` pipeline (text-in / text-out at scale over JSONL).
+
+If you need fine-grained control, fall back to the primitives:
+`batch_job_create` + `batch_job_get` + `batch_job_outputs`.
 
 ### Video analysis (one-call composite)
 
