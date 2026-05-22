@@ -248,8 +248,11 @@ async def lens_session_run_video(
     """Run an uploaded video through a lens and collect inference outputs.
 
     One-shot, end-to-end. Use this for "describe this video" style tasks
-    against video lenses like Activity Monitor
-    (`lns-fd669361822b07e2-bc608aa3fdf8b4f9`).
+    against video lenses like Activity Monitor C2.5
+    (`lns-1286e5d1d1b84a77-af311d579cc14869`, backed by
+    `Newton::c2_5_8b_260413b723a9ab` — current recommended vision lens).
+    The older `lns-fd669361822b07e2-bc608aa3fdf8b4f9` (`Newton::c2_4_7b_…`)
+    also works.
 
     Internally orchestrates the full workflow in the correct order so
     outputs are not lost to the SSE-live-only race condition:
