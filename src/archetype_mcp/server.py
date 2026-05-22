@@ -190,17 +190,17 @@ async def lens_session_create(lens_id: str) -> Any:
 
 
 @mcp.tool()
-async def lens_session_process_events(session_id: str, events: list[dict[str, Any]]) -> Any:
-    """Send one or more inline data events to a running lens session.
+async def lens_session_process_event(session_id: str, event: dict[str, Any]) -> Any:
+    """Send a single inline data event to a running lens session.
 
-    Each event is an object describing input data (text, JSON, base64 image,
-    numeric array). Use this for short-lived synchronous pushes; for high-rate
-    streaming, connect directly to the session WebSocket endpoint instead.
+    `event` must include a `type` field (and typically an `event_data` payload).
+    Use this for short-lived synchronous pushes; for high-rate streaming,
+    connect directly to the session_endpoint WebSocket from your own code.
     """
     return await _c().request(
         "POST",
         "/lens/sessions/events/process",
-        json={"session_id": session_id, "events": events},
+        json={"session_id": session_id, "event": event},
     )
 
 
@@ -214,29 +214,34 @@ async def lens_session_destroy(session_id: str) -> Any:
 
 @mcp.tool()
 async def lens_session_consume(
-    session_id: str,
+    session_endpoint: str,
     max_events: int = 50,
     max_wait_sec: float = 30.0,
-    since_event_id: str | None = None,
+    send_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Read events from a lens session's SSE consumer stream (bounded collect).
+    """Connect to a lens session's WebSocket and bounded-collect events.
 
-    Opens GET /lens/sessions/consumer/{session_id} as an SSE stream and
-    returns up to `max_events` events, waiting at most `max_wait_sec` total
-    seconds (also the per-event idle timeout). Returns whichever happens first.
+    `session_endpoint` is the `wss://...` URL returned by `lens_session_create`.
+    Authenticates via the standard Sec-WebSocket-Protocol subprotocols
+    (`authenticationauthorization.bearer.<API_KEY>`, `event-protocol-v1`).
 
-    Pass `since_event_id` (from a previous call's `last_event_id`) to resume
-    where you left off — the value is sent as the standard `Last-Event-ID`
-    request header.
+    Optionally send `send_events` (each `{"type": ..., "event_data": ...}`)
+    before listening — useful for emitting `output_stream.set` /
+    `input_stream.set` setup messages, or pushing inline data.
+
+    Returns up to `max_events` received events, stopping early on
+    `max_wait_sec`, server-side close, or read idle. Re-invoke the tool to
+    keep streaming; lens sessions are stateful, so a fresh connection picks
+    up where the previous one stopped.
 
     Response shape:
-        events: list of {data, event?, id?} (data is parsed JSON when possible)
+        events: list of JSON messages received
         count: number of events returned
-        last_event_id: most recent event id seen (cursor for the next call)
+        events_sent: how many messages we sent before listening
         max_events_reached: true if we stopped because of max_events
     """
-    return await _c().consume_session_events(
-        session_id, max_events, max_wait_sec, since_event_id
+    return await _c().consume_session_websocket(
+        session_endpoint, max_events, max_wait_sec, send_events
     )
 
 

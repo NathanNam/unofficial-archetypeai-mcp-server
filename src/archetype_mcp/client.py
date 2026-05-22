@@ -104,77 +104,45 @@ class ArchetypeClient:
             raise ArchetypeError(resp.status_code, body)
         return resp.json()
 
-    async def consume_session_events(
+    async def consume_session_websocket(
         self,
-        session_id: str,
+        session_endpoint: str,
         max_events: int = 50,
         max_wait_sec: float = 30.0,
-        since_event_id: str | None = None,
+        send_events: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        headers = {"Accept": "text/event-stream"}
-        if since_event_id is not None:
-            headers["Last-Event-ID"] = since_event_id
-        timeout = httpx.Timeout(
-            connect=10.0, read=max_wait_sec, write=10.0, pool=10.0
-        )
-        events: list[dict[str, Any]] = []
-        last_event_id: str | None = since_event_id
+        import asyncio
+        import websockets
+
+        subprotocols = [
+            f"authenticationauthorization.bearer.{self._api_key}",
+            "event-protocol-v1",
+        ]
+        events: list[Any] = []
+        sent_count = 0
         deadline = time.monotonic() + max_wait_sec
-        async with self._client.stream(
-            "GET",
-            f"/lens/sessions/consumer/{session_id}",
-            headers=headers,
-            timeout=timeout,
-        ) as resp:
-            if resp.status_code >= 400:
-                body_bytes = await resp.aread()
+        async with websockets.connect(
+            session_endpoint, subprotocols=subprotocols, open_timeout=10.0
+        ) as ws:
+            for msg in send_events or []:
+                await ws.send(json.dumps(msg))
+                sent_count += 1
+            while len(events) < max_events:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
                 try:
-                    body: Any = json.loads(body_bytes)
+                    raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                except (asyncio.TimeoutError, websockets.ConnectionClosed):
+                    break
+                try:
+                    events.append(json.loads(raw))
                 except Exception:
-                    body = body_bytes.decode("utf-8", errors="replace")
-                raise ArchetypeError(resp.status_code, body)
-            current_meta: dict[str, str] = {}
-            data_lines: list[str] = []
-            try:
-                async for line in resp.aiter_lines():
-                    if line == "":
-                        if data_lines:
-                            data = "\n".join(data_lines)
-                            try:
-                                parsed: Any = json.loads(data)
-                            except Exception:
-                                parsed = data
-                            evt: dict[str, Any] = {"data": parsed}
-                            if "event" in current_meta:
-                                evt["event"] = current_meta["event"]
-                            if "id" in current_meta:
-                                evt["id"] = current_meta["id"]
-                                last_event_id = current_meta["id"]
-                            events.append(evt)
-                        current_meta = {}
-                        data_lines = []
-                        if len(events) >= max_events:
-                            break
-                        if time.monotonic() >= deadline:
-                            break
-                        continue
-                    if line.startswith(":"):
-                        continue
-                    field, _, value = line.partition(":")
-                    if value.startswith(" "):
-                        value = value[1:]
-                    if field == "data":
-                        data_lines.append(value)
-                    elif field in ("event", "id", "retry"):
-                        current_meta[field] = value
-                    if time.monotonic() >= deadline:
-                        break
-            except httpx.ReadTimeout:
-                pass
+                    events.append({"raw": raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")})
         return {
             "events": events,
             "count": len(events),
-            "last_event_id": last_event_id,
+            "events_sent": sent_count,
             "max_events_reached": len(events) >= max_events,
         }
 
