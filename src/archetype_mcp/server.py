@@ -61,6 +61,107 @@ async def files_delete(file_id: str) -> Any:
     return await _c().request("DELETE", f"/files/delete/{file_id}")
 
 
+@mcp.tool()
+async def files_upload_base64(file_path: str) -> Any:
+    """Upload a file as base64-encoded multipart/form-data.
+
+    Use this when a raw binary upload is not possible (e.g. when bridging
+    through a JSON-only channel). Supports .jpg/.png/.txt/.csv/.json up to
+    512 MB after encoding. For larger files use the direct-to-cloud flow.
+    """
+    return await _c().upload_file_base64(file_path)
+
+
+@mcp.tool()
+async def files_download(file_id: str, dest_path: str) -> dict[str, Any]:
+    """Stream a previously uploaded file to a local path.
+
+    `dest_path` is created (along with parent dirs) and overwritten if it
+    already exists. Returns the path and total bytes written. The file must
+    be in a downloadable state — files still uploading or corrupt return 400.
+    """
+    return await _c().download_file(file_id, dest_path)
+
+
+@mcp.tool()
+async def files_upload_initiate(
+    filename: str,
+    file_type: str,
+    num_bytes: int,
+    resume_if_started: bool | None = None,
+) -> Any:
+    """Begin a direct-to-cloud upload and receive presigned URLs for each part.
+
+    Step 1 of the multipart flow. The response includes `upload_id`, `num_parts`,
+    and a `parts` array of presigned URLs. Clients then PUT each part's bytes
+    directly to its URL (capturing the response `ETag` as `part_token`), then
+    optionally checkpoint and finally call `files_upload_complete`.
+    Supports files up to 250 GB.
+    """
+    body: dict[str, Any] = {
+        "filename": filename,
+        "file_type": file_type,
+        "num_bytes": num_bytes,
+    }
+    if resume_if_started is not None:
+        body["resume_if_started"] = resume_if_started
+    return await _c().request("POST", "/files/uploads/initiate", json=body)
+
+
+@mcp.tool()
+async def files_upload_part_urls(upload_id: str, part_numbers: list[int]) -> Any:
+    """Refresh presigned URLs for specific parts of an in-progress upload.
+
+    Use when a previously issued URL is about to expire and the part has not
+    yet been PUT. The returned `parts` array preserves the input order.
+    """
+    return await _c().request(
+        "POST",
+        f"/files/uploads/{upload_id}/parts/urls",
+        json={"part_numbers": part_numbers},
+    )
+
+
+@mcp.tool()
+async def files_upload_checkpoint_parts(
+    upload_id: str, parts: list[dict[str, Any]]
+) -> Any:
+    """Persist part_tokens for completed parts so they can be skipped on resume.
+
+    Each entry in `parts` is `{"part_number": int, "part_token": str}` where
+    `part_token` is the ETag returned by the part's PUT request. Checkpointed
+    parts do not need to be re-supplied to `files_upload_complete`.
+    """
+    return await _c().request(
+        "POST",
+        f"/files/uploads/{upload_id}/parts/checkpoint",
+        json={"parts": parts},
+    )
+
+
+@mcp.tool()
+async def files_upload_complete(upload_id: str, parts: list[dict[str, Any]]) -> Any:
+    """Finalize a direct-to-cloud upload after every part has been PUT.
+
+    Only include parts that were NOT previously checkpointed. The server
+    assembles the final file and registers it with the organization, returning
+    the new `file_uid`.
+    """
+    return await _c().request(
+        "POST", f"/files/uploads/{upload_id}/complete", json={"parts": parts}
+    )
+
+
+@mcp.tool()
+async def files_upload_abort(upload_id: str) -> Any:
+    """Abort an in-progress direct-to-cloud upload and release its resources.
+
+    Has no effect on already-completed uploads (returns 409). Use this on
+    crash recovery or when the source file is no longer available.
+    """
+    return await _c().request("POST", f"/files/uploads/{upload_id}/abort")
+
+
 # ---------------------------------------------------------------------------
 # Lens API — register lenses and run sessions
 # ---------------------------------------------------------------------------
@@ -108,6 +209,101 @@ async def lens_session_destroy(session_id: str) -> Any:
     """Tear down a running lens session and release its resources."""
     return await _c().request(
         "POST", "/lens/sessions/destroy", json={"session_id": session_id}
+    )
+
+
+@mcp.tool()
+async def lens_modify(
+    lens_id: str,
+    lens_name: str | None = None,
+    lens_config: dict[str, Any] | None = None,
+) -> Any:
+    """Modify an existing lens template, overwriting previous settings.
+
+    Only lenses with `lens_modifiable: true` (see `lens_metadata`) can be
+    modified. `lens_config` accepts `model_pipeline` and/or `model_parameters`.
+    """
+    body: dict[str, Any] = {"lens_id": lens_id}
+    if lens_name is not None:
+        body["lens_name"] = lens_name
+    if lens_config is not None:
+        body["lens_config"] = lens_config
+    return await _c().request("POST", "/lens/modify", json=body)
+
+
+@mcp.tool()
+async def lens_clone(lens_id: str) -> Any:
+    """Clone an existing lens template, returning a new modifiable lens_id.
+
+    Subsequent changes to the original do not propagate to the clone. The
+    clone's config includes an `origin_lens_id` reference back to the source.
+    """
+    return await _c().request("POST", "/lens/clone", json={"lens_id": lens_id})
+
+
+@mcp.tool()
+async def lens_delete(lens_id: str) -> Any:
+    """Delete a lens template (active sessions based on it are not affected).
+
+    Built-in (non-modifiable) lenses cannot be deleted — the response's
+    `is_valid` field will be false with a 409-flavoured error message.
+    """
+    return await _c().request("POST", "/lens/delete", json={"lens_id": lens_id})
+
+
+@mcp.tool()
+async def lens_info() -> Any:
+    """Get a summary of all lenses in your organization (counts, last update)."""
+    return await _c().request("GET", "/lens/info")
+
+
+@mcp.tool()
+async def lens_metadata(
+    lens_id: str | None = None,
+    shard_index: int | None = None,
+    max_items_per_shard: int | None = None,
+) -> Any:
+    """Get detailed metadata for every lens in your org (or one if filtered).
+
+    Pagination via `shard_index` / `max_items_per_shard` — pass `-1` for no
+    limit. The response includes `lens_id`, `lens_name`, `lens_modifiable`,
+    and the full `lens_config` for each lens.
+    """
+    return await _c().request(
+        "GET",
+        "/lens/metadata",
+        params={
+            "lens_id": lens_id,
+            "shard_index": shard_index,
+            "max_items_per_shard": max_items_per_shard,
+        },
+    )
+
+
+@mcp.tool()
+async def lens_sessions_info() -> Any:
+    """Get a summary of all lens sessions in your org (active / total counts)."""
+    return await _c().request("GET", "/lens/sessions/info")
+
+
+@mcp.tool()
+async def lens_sessions_metadata(
+    session_id: str | None = None,
+    shard_index: int | None = None,
+    max_items_per_shard: int | None = None,
+) -> Any:
+    """Get detailed metadata for every active lens session (or one if filtered).
+
+    Pagination via `shard_index` / `max_items_per_shard` — pass `-1` for no limit.
+    """
+    return await _c().request(
+        "GET",
+        "/lens/sessions/metadata",
+        params={
+            "session_id": session_id,
+            "shard_index": shard_index,
+            "max_items_per_shard": max_items_per_shard,
+        },
     )
 
 
@@ -351,6 +547,113 @@ async def batch_pipeline_get(pipeline_id: str) -> Any:
 async def batch_pipeline_schema(pipeline_id: str) -> Any:
     """Get the configuration schema for a pipeline — required to discover input ports."""
     return await _c().request("GET", f"/batch/registry/pipelines/{pipeline_id}/schema")
+
+
+# ---------------------------------------------------------------------------
+# Fine-tune API — train custom models on uploaded datasets
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def finetune_job_create(
+    name: str,
+    config: dict[str, Any],
+    id: str | None = None,
+) -> Any:
+    """Create a fine-tune job.
+
+    `config` must include `datasets` (list of `{name, split, file_ids}` where
+    `split` is "train" or "eval") and optionally `model` (default
+    `Newton::c2_4_7b_251215a172f6d7`; also `Newton::c2_4_3b_251215dfe6a746`).
+    `id` is an optional client-supplied identifier (1-64 chars); omit to let
+    the server generate one.
+    """
+    body: dict[str, Any] = {"name": name, "config": config}
+    if id is not None:
+        body["id"] = id
+    return await _c().request("POST", "/fine-tune/jobs", json=body)
+
+
+@mcp.tool()
+async def finetune_job_get(job_id: str) -> Any:
+    """Fetch a fine-tune job's full record by ID."""
+    return await _c().request("GET", f"/fine-tune/jobs/{job_id}")
+
+
+@mcp.tool()
+async def finetune_job_list(
+    limit: int | None = None,
+    offset: int | None = None,
+    statuses: list[str] | None = None,
+) -> Any:
+    """List fine-tune jobs in the org.
+
+    `statuses` filters by status (one of UNKNOWN, REGISTERED, STARTING, RUNNING,
+    COMPLETED, FINALIZING, STOPPING, STOPPED, CANCELLED, FAILED). `limit=-1`
+    returns all matching jobs.
+    """
+    return await _c().request(
+        "GET",
+        "/fine-tune/jobs",
+        params={"limit": limit, "offset": offset, "statuses": statuses},
+    )
+
+
+@mcp.tool()
+async def finetune_job_cancel(job_id: str) -> Any:
+    """Cancel a fine-tune job immediately, without finalizing.
+
+    Cancellation discards in-progress checkpoints. Use `finetune_job_stop`
+    instead if you want the runner to wind down gracefully and preserve the
+    latest checkpoint.
+    """
+    return await _c().request("PUT", f"/fine-tune/jobs/{job_id}/cancel")
+
+
+@mcp.tool()
+async def finetune_job_stop(job_id: str) -> Any:
+    """Stop a running fine-tune job gracefully (preserves latest checkpoint).
+
+    Transitions through STOPPING → STOPPED. Use `finetune_job_cancel` to
+    abandon a job without finalizing.
+    """
+    return await _c().request("PUT", f"/fine-tune/jobs/{job_id}/stop")
+
+
+@mcp.tool()
+async def finetune_job_delete(job_id: str) -> Any:
+    """Delete a fine-tune job (does not gracefully stop a running job).
+
+    If the job is still running, call `finetune_job_stop` or
+    `finetune_job_cancel` first.
+    """
+    return await _c().request("DELETE", f"/fine-tune/jobs/{job_id}")
+
+
+@mcp.tool()
+async def finetune_job_metrics(
+    job_id: str, limit: int | None = None, offset: int | None = None
+) -> Any:
+    """Get per-step training and eval metrics for a fine-tune job.
+
+    Returns `last_checkpoint_step` plus an array of metric records. Typical
+    record keys: step, loss, eval_loss, learning_rate, wall_time_sec.
+    `limit=-1` (default) returns all entries.
+    """
+    return await _c().request(
+        "GET",
+        f"/fine-tune/jobs/{job_id}/metrics",
+        params={"limit": limit, "offset": offset},
+    )
+
+
+@mcp.tool()
+async def finetune_node_status() -> Any:
+    """Get the fine-tune runner node's current status.
+
+    Status is one of UNKNOWN, READY, BUSY, STALE, ERROR.
+    """
+    return await _c().request("GET", "/fine-tune/status")
 
 
 def main() -> None:

@@ -2,7 +2,8 @@
 
 An [MCP](https://modelcontextprotocol.io) server that exposes the
 [Archetype AI Newton Platform](https://docs.archetypeai.app) — Files, Lens,
-Query, and Batch Processing APIs — as tools that any MCP client can call.
+Query, Batch Processing, and Fine-tune APIs — as tools that any MCP client
+can call.
 
 This is an **unofficial** project, not affiliated with or endorsed by Archetype
 AI. It wraps the public REST API documented at
@@ -10,17 +11,27 @@ AI. It wraps the public REST API documented at
 
 ## What it gives you
 
+49 tools across every documented REST endpoint.
+
 | Group | Tools |
 | --- | --- |
-| Files | `files_upload`, `files_list`, `files_get_metadata`, `files_info`, `files_delete` |
-| Lens | `lens_register`, `lens_session_create`, `lens_session_process_events`, `lens_session_destroy` |
-| Query | `query` |
-| Batch jobs | `batch_job_create`, `batch_job_list`, `batch_job_get`, `batch_job_cancel`, `batch_job_retry`, `batch_job_delete`, `batch_job_events`, `batch_job_progress`, `batch_job_inputs`, `batch_job_inputs_progress`, `batch_job_inputs_progress_counts`, `batch_job_inputs_progress_traces`, `batch_job_outputs`, `batch_queue` |
-| Batch registry | `batch_pipeline_list`, `batch_pipeline_get`, `batch_pipeline_schema` |
+| Files (12) | `files_upload`, `files_upload_base64`, `files_list`, `files_get_metadata`, `files_info`, `files_delete`, `files_download`, `files_upload_initiate`, `files_upload_part_urls`, `files_upload_checkpoint_parts`, `files_upload_complete`, `files_upload_abort` |
+| Lens (11) | `lens_register`, `lens_modify`, `lens_clone`, `lens_delete`, `lens_info`, `lens_metadata`, `lens_session_create`, `lens_session_process_events`, `lens_session_destroy`, `lens_sessions_info`, `lens_sessions_metadata` |
+| Query (1) | `query` |
+| Batch jobs (14) | `batch_job_create`, `batch_job_list`, `batch_job_get`, `batch_job_cancel`, `batch_job_retry`, `batch_job_delete`, `batch_job_events`, `batch_job_progress`, `batch_job_inputs`, `batch_job_inputs_progress`, `batch_job_inputs_progress_counts`, `batch_job_inputs_progress_traces`, `batch_job_outputs`, `batch_queue` |
+| Batch registry (3) | `batch_pipeline_list`, `batch_pipeline_get`, `batch_pipeline_schema` |
+| Fine-tune (8) | `finetune_job_create`, `finetune_job_get`, `finetune_job_list`, `finetune_job_cancel`, `finetune_job_stop`, `finetune_job_delete`, `finetune_job_metrics`, `finetune_node_status` |
 
-Not yet covered: WebSocket / SSE streaming for lens sessions, multipart
-direct-to-cloud uploads (>512 MB), and fine-tuning. Hook those in your own
-client using the `session_endpoint` returned by `lens_session_create`.
+**Not covered:** the lens session WebSocket / SSE event stream
+(`/lens/sessions/consumer/{session_id}`). MCP tools are request-response and
+don't fit a long-lived bidirectional channel — connect to the
+`session_endpoint` returned by `lens_session_create` from your own code to
+consume real-time inference events.
+
+The multipart direct-to-cloud upload flow IS covered as a set of discrete
+tools (`files_upload_initiate` → PUT parts to presigned URLs →
+`files_upload_complete`). Driving the PUTs to the presigned URLs is still up
+to the client (those go to the storage provider, not the Archetype API).
 
 ## Install
 
