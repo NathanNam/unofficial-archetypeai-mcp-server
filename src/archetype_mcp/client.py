@@ -275,8 +275,8 @@ class ArchetypeClient:
 
     async def run_session_with_video(
         self,
-        lens_id: str,
         file_id: str,
+        lens_id: str = "lns-1286e5d1d1b84a77-af311d579cc14869",
         max_outputs: int = 20,
         max_wait_sec: float = 120.0,
     ) -> dict[str, Any]:

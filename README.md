@@ -258,9 +258,11 @@ files_upload("/path/to/Ring_Dashcam_Traffic.mp4")
 # 2. Run the lens. One call. Creates session, binds the SSE writer
 #    (built-in lenses ship with none), connects the consumer, fires
 #    input_stream.set, drains, destroys.
+#    `lens_id` defaults to Activity Monitor C2.5; pass it explicitly to
+#    override (e.g. lens_id="lns-fd669361822b07e2-bc608aa3fdf8b4f9" for
+#    the older Activity Monitor / Newton::c2_4_7b_...).
 lens_session_run_video(
   file_id="Ring_Dashcam_Traffic.mp4",
-  lens_id="lns-1286e5d1d1b84a77-af311d579cc14869",  # Activity Monitor C2.5
   max_outputs=20,
   max_wait_sec=120,
 )

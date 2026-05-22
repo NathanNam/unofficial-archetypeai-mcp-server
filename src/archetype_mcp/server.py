@@ -241,18 +241,19 @@ async def lens_session_destroy(session_id: str) -> Any:
 @mcp.tool()
 async def lens_session_run_video(
     file_id: str,
-    lens_id: str,
+    lens_id: str = "lns-1286e5d1d1b84a77-af311d579cc14869",
     max_outputs: int = 20,
     max_wait_sec: float = 120.0,
 ) -> dict[str, Any]:
     """Run an uploaded video through a lens and collect inference outputs.
 
-    One-shot, end-to-end. Use this for "describe this video" style tasks
-    against video lenses like Activity Monitor C2.5
+    One-shot, end-to-end. Use this for "describe this video" style tasks.
+    Defaults to Activity Monitor C2.5
     (`lns-1286e5d1d1b84a77-af311d579cc14869`, backed by
-    `Newton::c2_5_8b_260413b723a9ab` — current recommended vision lens).
-    The older `lns-fd669361822b07e2-bc608aa3fdf8b4f9` (`Newton::c2_4_7b_…`)
-    also works.
+    `Newton::c2_5_8b_260413b723a9ab` — current recommended vision lens);
+    pass `lens_id` explicitly to override (the older Activity Monitor
+    `lns-fd669361822b07e2-bc608aa3fdf8b4f9` / `Newton::c2_4_7b_…` also
+    works).
 
     Internally orchestrates the full workflow in the correct order so
     outputs are not lost to the SSE-live-only race condition:
@@ -290,7 +291,7 @@ async def lens_session_run_video(
         input_stream_response: server's reply to the `input_stream.set` event
     """
     return await _c().run_session_with_video(
-        lens_id, file_id, max_outputs, max_wait_sec
+        file_id, lens_id, max_outputs, max_wait_sec
     )
 
 
