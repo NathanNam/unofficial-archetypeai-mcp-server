@@ -273,6 +273,157 @@ class ArchetypeClient:
             "max_messages_reached": len(messages) >= max_messages,
         }
 
+    async def run_session_with_video(
+        self,
+        lens_id: str,
+        file_id: str,
+        max_outputs: int = 20,
+        max_wait_sec: float = 120.0,
+    ) -> dict[str, Any]:
+        import asyncio
+
+        s = await self.request(
+            "POST", "/lens/sessions/create", json={"lens_id": lens_id}
+        )
+        session_id = s["session_id"]
+        session_endpoint = s["session_endpoint"]
+
+        outputs: list[Any] = []
+        err_holder: dict[str, Exception] = {}
+        stream_started = asyncio.Event()
+        stream_ended = False
+
+        async def sse_reader() -> None:
+            nonlocal stream_ended
+            deadline = time.monotonic() + max_wait_sec
+            try:
+                async with self._client.stream(
+                    "GET",
+                    f"/lens/sessions/consumer/{session_id}",
+                    headers={"Accept": "text/event-stream"},
+                    timeout=httpx.Timeout(
+                        connect=10.0, read=max_wait_sec, write=10.0, pool=10.0
+                    ),
+                ) as resp:
+                    if resp.status_code >= 400:
+                        body_bytes = await resp.aread()
+                        try:
+                            body: Any = json.loads(body_bytes)
+                        except Exception:
+                            body = body_bytes.decode("utf-8", errors="replace")
+                        err_holder["err"] = ArchetypeError(resp.status_code, body)
+                        return
+
+                    data_lines: list[str] = []
+                    try:
+                        async for line in resp.aiter_lines():
+                            if line == "":
+                                if data_lines:
+                                    try:
+                                        payload: Any = json.loads("\n".join(data_lines))
+                                    except Exception:
+                                        payload = None
+                                    if isinstance(payload, dict):
+                                        t = payload.get("type")
+                                        if t == "sse.stream.start":
+                                            stream_started.set()
+                                        elif t == "sse.stream.heartbeat":
+                                            pass
+                                        elif t == "sse.stream.end":
+                                            stream_ended = True
+                                            return
+                                        else:
+                                            outputs.append(payload)
+                                            if len(outputs) >= max_outputs:
+                                                return
+                                data_lines = []
+                                if time.monotonic() >= deadline:
+                                    return
+                                continue
+                            if line.startswith(":"):
+                                continue
+                            field, _, value = line.partition(":")
+                            if value.startswith(" "):
+                                value = value[1:]
+                            if field == "data":
+                                data_lines.append(value)
+                    except httpx.ReadTimeout:
+                        return
+            except Exception as e:
+                err_holder["err"] = e
+
+        # Built-in lenses (Activity Monitor, Machine State, etc.) ship with NO
+        # output_streams configured — outputs are produced internally (counted
+        # in num_outputs) but not routed to any consumer until we bind a
+        # writer. Set the SSE writer BEFORE opening the consumer so the
+        # subscription has something to subscribe to.
+        output_resp: Any = None
+        try:
+            output_resp = await self.send_session_websocket_event(
+                session_endpoint,
+                {
+                    "type": "output_stream.set",
+                    "event_data": {
+                        "stream_type": "server_sent_events_writer",
+                        "stream_config": {},
+                    },
+                },
+                timeout_sec=15.0,
+            )
+        except Exception as e:
+            err_holder["err"] = e
+
+        sse_task = asyncio.create_task(sse_reader())
+        input_resp: Any = None
+        try:
+            try:
+                await asyncio.wait_for(stream_started.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                pass
+
+            input_event = {
+                "type": "input_stream.set",
+                "event_data": {
+                    "stream_type": "video_file_reader",
+                    "stream_config": {"file_id": file_id},
+                },
+            }
+            input_resp = await self.send_session_websocket_event(
+                session_endpoint, input_event, timeout_sec=15.0
+            )
+            await sse_task
+        finally:
+            if not sse_task.done():
+                sse_task.cancel()
+                try:
+                    await sse_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            try:
+                await self.request(
+                    "POST",
+                    "/lens/sessions/destroy",
+                    json={"session_id": session_id},
+                )
+            except Exception:
+                pass
+
+        if "err" in err_holder:
+            raise err_holder["err"]
+
+        return {
+            "session_id": session_id,
+            "lens_id": lens_id,
+            "file_id": file_id,
+            "outputs": outputs,
+            "count": len(outputs),
+            "max_outputs_reached": len(outputs) >= max_outputs,
+            "sse_stream_started": stream_started.is_set(),
+            "sse_stream_ended": stream_ended,
+            "output_stream_response": output_resp,
+            "input_stream_response": input_resp,
+        }
+
     async def download_file(self, file_id: str, dest_path: str) -> dict[str, Any]:
         dest = Path(dest_path).expanduser().resolve()
         dest.parent.mkdir(parents=True, exist_ok=True)

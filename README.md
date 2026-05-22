@@ -11,36 +11,63 @@ AI. It wraps the public REST API documented at
 
 ## What it gives you
 
-52 tools covering every documented REST endpoint plus both lens session
-output channels (WebSocket and SSE).
+53 tools covering every documented REST endpoint, both lens session
+output channels (WebSocket and SSE), and one high-level composite for
+the most common end-to-end flow.
 
 | Group | Tools |
 | --- | --- |
 | Files (12) | `files_upload`, `files_upload_base64`, `files_list`, `files_get_metadata`, `files_info`, `files_delete`, `files_download`, `files_upload_initiate`, `files_upload_part_urls`, `files_upload_checkpoint_parts`, `files_upload_complete`, `files_upload_abort` |
-| Lens (14) | `lens_register`, `lens_modify`, `lens_clone`, `lens_delete`, `lens_info`, `lens_metadata`, `lens_session_create`, `lens_session_process_event`, `lens_session_send_event`, `lens_session_consume`, `lens_session_poll_read`, `lens_session_destroy`, `lens_sessions_info`, `lens_sessions_metadata` |
+| Lens (15) | `lens_register`, `lens_modify`, `lens_clone`, `lens_delete`, `lens_info`, `lens_metadata`, `lens_session_create`, `lens_session_process_event`, `lens_session_send_event`, `lens_session_consume`, `lens_session_poll_read`, `lens_session_run_video`, `lens_session_destroy`, `lens_sessions_info`, `lens_sessions_metadata` |
 | Query (1) | `query` |
 | Batch jobs (14) | `batch_job_create`, `batch_job_list`, `batch_job_get`, `batch_job_cancel`, `batch_job_retry`, `batch_job_delete`, `batch_job_events`, `batch_job_progress`, `batch_job_inputs`, `batch_job_inputs_progress`, `batch_job_inputs_progress_counts`, `batch_job_inputs_progress_traces`, `batch_job_outputs`, `batch_queue` |
 | Batch registry (3) | `batch_pipeline_list`, `batch_pipeline_get`, `batch_pipeline_schema` |
 | Fine-tune (8) | `finetune_job_create`, `finetune_job_get`, `finetune_job_list`, `finetune_job_cancel`, `finetune_job_stop`, `finetune_job_delete`, `finetune_job_metrics`, `finetune_node_status` |
 
+### For most video / file-driven analysis: use the composite tool
+
+`lens_session_run_video(file_id, lens_id, max_outputs=20, max_wait_sec=120)`
+runs the full workflow in the correct order in one call:
+
+1. Creates a session for `lens_id`
+2. Binds the SSE writer (`output_stream.set` →
+   `server_sent_events_writer`) — most built-in lenses (Activity Monitor,
+   etc.) ship with **no `output_streams` configured**, so outputs are
+   counted but routed nowhere until a writer is attached
+3. Opens the SSE consumer and waits for `sse.stream.start`
+4. Sends `input_stream.set` with `stream_type: video_file_reader`
+5. Drains the SSE stream until `max_outputs` collected, `max_wait_sec`
+   elapses, or the server sends `sse.stream.end`
+6. Destroys the session
+
+Use this whenever you have an uploaded video and a vision lens
+(Activity Monitor: `lns-fd669361822b07e2-bc608aa3fdf8b4f9`). For other
+input types (RTSP cameras, CSV time-series, sensor streams) or
+long-running sessions where you need fine-grained control, fall back
+to the primitives below.
+
 ### Lens session output channels — two paths, pick the right one
 
-The platform writes lens outputs through **two distinct channels**
-depending on the lens's output processor configuration. Each lens uses one
-or the other, never both:
+When you assemble the workflow from primitives, the platform writes lens
+outputs through **two distinct channels** depending on the lens's output
+processor configuration. Each lens uses one or the other, never both:
 
-- **SSE consumer** at `GET /lens/sessions/consumer/{session_id}` — used by
+- **SSE consumer** at `GET /lens/sessions/consumer/{session_id}` — for
   lenses with `server_sent_events_writer` output processors (Activity
-  Monitor, most cookbook lenses). Read with **`lens_session_consume`**.
-  Mirrors `lens.create_sse_consumer()` in the official Python SDK.
-- **WebSocket `session.read` mailbox** — used by lenses with mailbox-style
+  Monitor, most cookbook lenses, or any lens after you bind a writer with
+  `output_stream.set`). Read with **`lens_session_consume`**. Mirrors
+  `lens.create_sse_consumer()` in the official Python SDK.
+- **WebSocket `session.read` mailbox** — for lenses with mailbox-style
   outputs. Read with **`lens_session_poll_read`**. Sends repeated
   `session.read` events on the WS connection and aggregates the returned
   messages.
 
 If `lens_session_consume` returns nothing but `lens_sessions_metadata`
 shows non-zero `num_outputs`, you're reading the wrong channel — switch to
-`lens_session_poll_read` (or vice versa).
+`lens_session_poll_read`. SSE is also **live-only**: it surfaces events
+that occur after you connect, so opening the consumer after the lens has
+finished processing returns nothing. The composite tool sidesteps both
+gotchas; the primitives expose them to the caller.
 
 ### Lens session WebSocket RPC
 
@@ -216,12 +243,29 @@ batch_job_get("<job id>")
 batch_job_outputs("<job id>")  # presigned URLs, refresh as they expire
 ```
 
-### Real-time lens session
+### Video analysis (one-call composite)
+
+```
+files_upload("/path/to/Ring_Dashcam_Traffic.mp4")
+lens_session_run_video(
+  file_id="Ring_Dashcam_Traffic.mp4",   # filename, not file_uid
+  lens_id="lns-fd669361822b07e2-bc608aa3fdf8b4f9",  # Activity Monitor
+  max_outputs=20,
+  max_wait_sec=120,
+)
+# Returns {outputs: [...], count: N, ...}; one event per N seconds of
+# video, each with a natural-language description in response[0].
+```
+
+### Real-time lens session (manual orchestration)
 
 ```
 lens_session_create("lns-1d519091822706e2-bc108andqxf8b4os")
 # Connect to the returned session_endpoint (WebSocket) from your own code
-# to stream sensor data in and receive inference events.
+# to stream sensor data in and receive inference events, or use
+# lens_session_send_event / lens_session_consume / lens_session_poll_read
+# from this server. Bind a writer first with output_stream.set if the
+# lens has no output_streams configured (most built-in lenses don't).
 lens_session_destroy("<session id>")
 ```
 
