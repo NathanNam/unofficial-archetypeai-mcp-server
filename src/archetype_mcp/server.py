@@ -779,6 +779,52 @@ async def batch_pipeline_schema(pipeline_id: str) -> Any:
     return await _c().request("GET", f"/batch/registry/pipelines/{pipeline_id}/schema")
 
 
+@mcp.tool()
+async def batch_download_outputs(
+    job_id: str,
+    dest_dir: str | None = None,
+    max_preview_lines: int = 50,
+    max_outputs: int | None = None,
+) -> dict[str, Any]:
+    """Download all output files of a completed batch job to a local directory.
+
+    Use this after a batch job (e.g. `batch_run_machine_state_classification`,
+    `batch_run_activity_detection`) reaches `COMPLETED`. The platform returns
+    output files as **presigned S3 URLs** (in `outputs[*].data.ref`) that
+    expire in ~20 minutes — they are direct storage links, not Archetype API
+    endpoints, so `files_download` will NOT work on them and clients
+    sandboxed away from S3 cannot fetch them directly.
+
+    This tool runs in the MCP server's host environment (which CAN reach S3),
+    downloads each output to disk, and returns local paths plus a preview of
+    the first `max_preview_lines` lines so the LLM can inspect / summarize
+    the results without loading the full file into the response.
+
+    Parameters:
+      - `job_id`: id of the batch job whose outputs to fetch.
+      - `dest_dir`: directory to write to. Defaults to a unique temp dir
+        (path returned in the response so you can read the files later).
+      - `max_preview_lines`: how many lines per file to inline as a preview.
+        Set to 0 to skip previews (faster on large files).
+      - `max_outputs`: only download the first N output files. Useful when
+        a job emits many shards and you only need a sample.
+
+    Returns:
+        job_id, dest_dir, count,
+        outputs: list of {id, input_file_id, port_name, local_path,
+                          bytes_written, preview_lines}.
+
+    Failed downloads keep their record but carry an `error` field instead of
+    a `local_path`.
+    """
+    return await _c().download_batch_outputs(
+        job_id=job_id,
+        dest_dir=dest_dir,
+        max_preview_lines=max_preview_lines,
+        max_outputs=max_outputs,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Batch Processing API — one-call composites (submit + poll + outputs)
 # ---------------------------------------------------------------------------
