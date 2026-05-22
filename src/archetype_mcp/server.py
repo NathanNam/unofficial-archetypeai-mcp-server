@@ -213,35 +213,66 @@ async def lens_session_destroy(session_id: str) -> Any:
 
 
 @mcp.tool()
+async def lens_session_send_event(
+    session_endpoint: str,
+    event: dict[str, Any],
+    timeout_sec: float = 30.0,
+) -> Any:
+    """Send one event to a lens session WebSocket and return the response.
+
+    Matches the `send_and_receive_event(socket, event)` pattern from the docs:
+    opens a WebSocket to `session_endpoint`, sends `event`, reads exactly one
+    response, closes. Use for any documented event type — `session.status`,
+    `session.validate`, `session.read`, `session.destroy`, `input_stream.set`,
+    `model.query`, etc.
+
+    `event` must include a `type` field (and typically `event_data`).
+    Authenticates via Sec-WebSocket-Protocol subprotocols
+    (`authenticationauthorization.bearer.<API_KEY>` + `event-protocol-v1`).
+
+    `session.status` returns the full session record directly. Every other
+    event returns `{type: "<event>.response", event_data: {...}}`. When
+    `event_data` would be empty, the server returns it as `null`.
+    """
+    return await _c().send_session_websocket_event(
+        session_endpoint, event, timeout_sec
+    )
+
+
+@mcp.tool()
 async def lens_session_consume(
     session_endpoint: str,
-    max_events: int = 50,
+    client_id: str | None = None,
+    max_messages: int = 50,
     max_wait_sec: float = 30.0,
-    send_events: list[dict[str, Any]] | None = None,
+    poll_interval_sec: float = 2.0,
 ) -> dict[str, Any]:
-    """Connect to a lens session's WebSocket and bounded-collect events.
+    """Drain pending async messages from a lens session via `session.read`.
 
-    `session_endpoint` is the `wss://...` URL returned by `lens_session_create`.
-    Authenticates via the standard Sec-WebSocket-Protocol subprotocols
-    (`authenticationauthorization.bearer.<API_KEY>`, `event-protocol-v1`).
+    Opens a WebSocket to `session_endpoint` and repeatedly sends
+    `{"type": "session.read", "event_data": {"client_id": <id>}}` events,
+    aggregating the `messages` from each response (inference.result,
+    log.info, frame.processed, stream.status, error, etc.) until `max_messages`
+    is reached or `max_wait_sec` elapses.
 
-    Optionally send `send_events` (each `{"type": ..., "event_data": ...}`)
-    before listening — useful for emitting `output_stream.set` /
-    `input_stream.set` setup messages, or pushing inline data.
+    Pass the same `client_id` across calls to preserve message stream
+    playback position; pass `None` to generate a fresh client_id (which
+    resets playback). Between empty polls, the tool sleeps
+    `poll_interval_sec` before sending the next `session.read`.
 
-    Returns up to `max_events` received events, stopping early on
-    `max_wait_sec`, server-side close, or read idle. Re-invoke the tool to
-    keep streaming; lens sessions are stateful, so a fresh connection picks
-    up where the previous one stopped.
-
-    Response shape:
-        events: list of JSON messages received
-        count: number of events returned
-        events_sent: how many messages we sent before listening
-        max_events_reached: true if we stopped because of max_events
+    Returns:
+        messages: list of received message objects (each typically has
+                  timestamp / type / data fields)
+        count: number of messages returned
+        client_id: the client_id used (echoed for the next call)
+        max_messages_reached: true if we stopped because of max_messages
     """
     return await _c().consume_session_websocket(
-        session_endpoint, max_events, max_wait_sec, send_events
+        session_endpoint,
+        client_id,
+        max_messages,
+        max_wait_sec,
+        poll_interval_sec,
     )
 
 

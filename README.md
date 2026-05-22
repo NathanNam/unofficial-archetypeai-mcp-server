@@ -11,13 +11,13 @@ AI. It wraps the public REST API documented at
 
 ## What it gives you
 
-50 tools across every documented REST endpoint, including a bounded-collect
-wrapper around the lens session SSE stream.
+51 tools covering every documented REST endpoint plus the lens session
+WebSocket protocol.
 
 | Group | Tools |
 | --- | --- |
 | Files (12) | `files_upload`, `files_upload_base64`, `files_list`, `files_get_metadata`, `files_info`, `files_delete`, `files_download`, `files_upload_initiate`, `files_upload_part_urls`, `files_upload_checkpoint_parts`, `files_upload_complete`, `files_upload_abort` |
-| Lens (12) | `lens_register`, `lens_modify`, `lens_clone`, `lens_delete`, `lens_info`, `lens_metadata`, `lens_session_create`, `lens_session_process_event`, `lens_session_consume`, `lens_session_destroy`, `lens_sessions_info`, `lens_sessions_metadata` |
+| Lens (13) | `lens_register`, `lens_modify`, `lens_clone`, `lens_delete`, `lens_info`, `lens_metadata`, `lens_session_create`, `lens_session_process_event`, `lens_session_send_event`, `lens_session_consume`, `lens_session_destroy`, `lens_sessions_info`, `lens_sessions_metadata` |
 | Query (1) | `query` |
 | Batch jobs (14) | `batch_job_create`, `batch_job_list`, `batch_job_get`, `batch_job_cancel`, `batch_job_retry`, `batch_job_delete`, `batch_job_events`, `batch_job_progress`, `batch_job_inputs`, `batch_job_inputs_progress`, `batch_job_inputs_progress_counts`, `batch_job_inputs_progress_traces`, `batch_job_outputs`, `batch_queue` |
 | Batch registry (3) | `batch_pipeline_list`, `batch_pipeline_get`, `batch_pipeline_schema` |
@@ -25,19 +25,34 @@ wrapper around the lens session SSE stream.
 
 ### Notes on streaming endpoints
 
-- **Lens session WebSocket**: `lens_session_consume` connects to the
-  `wss://` `session_endpoint` returned by `lens_session_create`, optionally
-  sends a list of setup or data events first, then bounded-collects up to N
-  inbound messages (defaults: 50 events / 30 seconds). Authentication uses
-  the documented `Sec-WebSocket-Protocol` subprotocols
+The lens session WebSocket protocol is **request-response RPC, not
+unsolicited push**. Each event you send (`session.status`, `session.validate`,
+`input_stream.set`, `model.query`, `session.read`, `session.destroy`, …)
+receives exactly one matching `<event>.response` reply. Async inference
+results are queued server-side and drained by polling `session.read`.
+
+Two tools wrap this:
+
+- **`lens_session_send_event(session_endpoint, event, timeout_sec=30)`** —
+  the generic RPC primitive. Opens a WebSocket, sends one event, reads one
+  response, closes. Use this for `session.status`, `session.validate`,
+  `input_stream.set`, `model.query`, etc. Authenticates via
+  `Sec-WebSocket-Protocol` subprotocols
   (`authenticationauthorization.bearer.<API_KEY>` + `event-protocol-v1`).
-  Re-invoke the tool to keep streaming — the session is stateful on the
-  server side. For true real-time push, connect to the WebSocket directly
-  from your own code.
-- **Multipart direct-to-cloud upload**: covered as five discrete tools
-  (`files_upload_initiate` → PUT parts to presigned URLs →
-  `files_upload_complete`). Driving the PUTs to the presigned URLs is still
-  up to the client — those go to the storage provider, not the Archetype API.
+- **`lens_session_consume(session_endpoint, client_id=None, max_messages=50,
+  max_wait_sec=30, poll_interval_sec=2)`** — convenience wrapper that drains
+  pending async messages by polling `session.read` repeatedly. Pass the
+  same `client_id` across calls to preserve message stream playback
+  position; pass `None` to generate a fresh one (which resets playback).
+
+For true real-time push or many events on a single long-lived connection,
+connect to the WebSocket directly from your own code — both tools open a
+fresh connection per call.
+
+**Multipart direct-to-cloud upload** is covered as five discrete tools
+(`files_upload_initiate` → PUT parts to presigned URLs →
+`files_upload_complete`). Driving the PUTs to the presigned URLs is still
+up to the client — those go to the storage provider, not the Archetype API.
 
 ## Install
 

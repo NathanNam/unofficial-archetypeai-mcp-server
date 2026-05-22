@@ -104,46 +104,85 @@ class ArchetypeClient:
             raise ArchetypeError(resp.status_code, body)
         return resp.json()
 
-    async def consume_session_websocket(
-        self,
-        session_endpoint: str,
-        max_events: int = 50,
-        max_wait_sec: float = 30.0,
-        send_events: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        import asyncio
+    def _open_session_websocket(self, session_endpoint: str) -> Any:
         import websockets
 
         subprotocols = [
             f"authenticationauthorization.bearer.{self._api_key}",
             "event-protocol-v1",
         ]
-        events: list[Any] = []
-        sent_count = 0
-        deadline = time.monotonic() + max_wait_sec
-        async with websockets.connect(
+        return websockets.connect(
             session_endpoint, subprotocols=subprotocols, open_timeout=10.0
-        ) as ws:
-            for msg in send_events or []:
-                await ws.send(json.dumps(msg))
-                sent_count += 1
-            while len(events) < max_events:
+        )
+
+    async def send_session_websocket_event(
+        self,
+        session_endpoint: str,
+        event: dict[str, Any],
+        timeout_sec: float = 30.0,
+    ) -> Any:
+        import asyncio
+
+        async with self._open_session_websocket(session_endpoint) as ws:
+            await ws.send(json.dumps(event))
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=timeout_sec)
+            except asyncio.TimeoutError:
+                return {"error": "timeout", "timeout_sec": timeout_sec}
+            try:
+                return json.loads(raw)
+            except Exception:
+                return {"raw": raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")}
+
+    async def consume_session_websocket(
+        self,
+        session_endpoint: str,
+        client_id: str | None = None,
+        max_messages: int = 50,
+        max_wait_sec: float = 30.0,
+        poll_interval_sec: float = 2.0,
+    ) -> dict[str, Any]:
+        import asyncio
+        import uuid
+
+        import websockets
+
+        if client_id is None:
+            client_id = str(uuid.uuid4())[:8]
+        messages: list[Any] = []
+        deadline = time.monotonic() + max_wait_sec
+        async with self._open_session_websocket(session_endpoint) as ws:
+            while len(messages) < max_messages:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
+                read_event = {
+                    "type": "session.read",
+                    "event_data": {"client_id": client_id},
+                }
+                await ws.send(json.dumps(read_event))
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
                 except (asyncio.TimeoutError, websockets.ConnectionClosed):
                     break
                 try:
-                    events.append(json.loads(raw))
+                    response: Any = json.loads(raw)
                 except Exception:
-                    events.append({"raw": raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")})
+                    continue
+                event_data = response.get("event_data") if isinstance(response, dict) else None
+                batch = (event_data or {}).get("messages") or []
+                messages.extend(batch)
+                if not batch:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    await asyncio.sleep(min(poll_interval_sec, remaining))
+        truncated = messages[:max_messages]
         return {
-            "events": events,
-            "count": len(events),
-            "events_sent": sent_count,
-            "max_events_reached": len(events) >= max_events,
+            "messages": truncated,
+            "count": len(truncated),
+            "client_id": client_id,
+            "max_messages_reached": len(messages) >= max_messages,
         }
 
     async def download_file(self, file_id: str, dest_path: str) -> dict[str, Any]:
