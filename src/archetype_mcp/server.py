@@ -213,6 +213,34 @@ async def lens_session_destroy(session_id: str) -> Any:
 
 
 @mcp.tool()
+async def lens_session_consume(
+    session_id: str,
+    max_events: int = 50,
+    max_wait_sec: float = 30.0,
+    since_event_id: str | None = None,
+) -> dict[str, Any]:
+    """Read events from a lens session's SSE consumer stream (bounded collect).
+
+    Opens GET /lens/sessions/consumer/{session_id} as an SSE stream and
+    returns up to `max_events` events, waiting at most `max_wait_sec` total
+    seconds (also the per-event idle timeout). Returns whichever happens first.
+
+    Pass `since_event_id` (from a previous call's `last_event_id`) to resume
+    where you left off — the value is sent as the standard `Last-Event-ID`
+    request header.
+
+    Response shape:
+        events: list of {data, event?, id?} (data is parsed JSON when possible)
+        count: number of events returned
+        last_event_id: most recent event id seen (cursor for the next call)
+        max_events_reached: true if we stopped because of max_events
+    """
+    return await _c().consume_session_events(
+        session_id, max_events, max_wait_sec, since_event_id
+    )
+
+
+@mcp.tool()
 async def lens_modify(
     lens_id: str,
     lens_name: str | None = None,

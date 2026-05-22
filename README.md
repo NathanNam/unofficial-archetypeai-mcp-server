@@ -11,27 +11,30 @@ AI. It wraps the public REST API documented at
 
 ## What it gives you
 
-49 tools across every documented REST endpoint.
+50 tools across every documented REST endpoint, including a bounded-collect
+wrapper around the lens session SSE stream.
 
 | Group | Tools |
 | --- | --- |
 | Files (12) | `files_upload`, `files_upload_base64`, `files_list`, `files_get_metadata`, `files_info`, `files_delete`, `files_download`, `files_upload_initiate`, `files_upload_part_urls`, `files_upload_checkpoint_parts`, `files_upload_complete`, `files_upload_abort` |
-| Lens (11) | `lens_register`, `lens_modify`, `lens_clone`, `lens_delete`, `lens_info`, `lens_metadata`, `lens_session_create`, `lens_session_process_events`, `lens_session_destroy`, `lens_sessions_info`, `lens_sessions_metadata` |
+| Lens (12) | `lens_register`, `lens_modify`, `lens_clone`, `lens_delete`, `lens_info`, `lens_metadata`, `lens_session_create`, `lens_session_process_events`, `lens_session_consume`, `lens_session_destroy`, `lens_sessions_info`, `lens_sessions_metadata` |
 | Query (1) | `query` |
 | Batch jobs (14) | `batch_job_create`, `batch_job_list`, `batch_job_get`, `batch_job_cancel`, `batch_job_retry`, `batch_job_delete`, `batch_job_events`, `batch_job_progress`, `batch_job_inputs`, `batch_job_inputs_progress`, `batch_job_inputs_progress_counts`, `batch_job_inputs_progress_traces`, `batch_job_outputs`, `batch_queue` |
 | Batch registry (3) | `batch_pipeline_list`, `batch_pipeline_get`, `batch_pipeline_schema` |
 | Fine-tune (8) | `finetune_job_create`, `finetune_job_get`, `finetune_job_list`, `finetune_job_cancel`, `finetune_job_stop`, `finetune_job_delete`, `finetune_job_metrics`, `finetune_node_status` |
 
-**Not covered:** the lens session WebSocket / SSE event stream
-(`/lens/sessions/consumer/{session_id}`). MCP tools are request-response and
-don't fit a long-lived bidirectional channel — connect to the
-`session_endpoint` returned by `lens_session_create` from your own code to
-consume real-time inference events.
+### Notes on streaming endpoints
 
-The multipart direct-to-cloud upload flow IS covered as a set of discrete
-tools (`files_upload_initiate` → PUT parts to presigned URLs →
-`files_upload_complete`). Driving the PUTs to the presigned URLs is still up
-to the client (those go to the storage provider, not the Archetype API).
+- **Lens SSE consumer**: `lens_session_consume` opens
+  `GET /lens/sessions/consumer/{session_id}` and collects up to N events with
+  a wall-clock deadline (defaults: 50 events / 30 seconds). Pass
+  `since_event_id` (from a previous call's `last_event_id`) as a cursor — the
+  value is sent as the standard `Last-Event-ID` header. For true real-time
+  push, connect to the SSE endpoint directly from your own code.
+- **Multipart direct-to-cloud upload**: covered as five discrete tools
+  (`files_upload_initiate` → PUT parts to presigned URLs →
+  `files_upload_complete`). Driving the PUTs to the presigned URLs is still
+  up to the client — those go to the storage provider, not the Archetype API.
 
 ## Install
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +103,80 @@ class ArchetypeClient:
                 body = resp.text
             raise ArchetypeError(resp.status_code, body)
         return resp.json()
+
+    async def consume_session_events(
+        self,
+        session_id: str,
+        max_events: int = 50,
+        max_wait_sec: float = 30.0,
+        since_event_id: str | None = None,
+    ) -> dict[str, Any]:
+        headers = {"Accept": "text/event-stream"}
+        if since_event_id is not None:
+            headers["Last-Event-ID"] = since_event_id
+        timeout = httpx.Timeout(
+            connect=10.0, read=max_wait_sec, write=10.0, pool=10.0
+        )
+        events: list[dict[str, Any]] = []
+        last_event_id: str | None = since_event_id
+        deadline = time.monotonic() + max_wait_sec
+        async with self._client.stream(
+            "GET",
+            f"/lens/sessions/consumer/{session_id}",
+            headers=headers,
+            timeout=timeout,
+        ) as resp:
+            if resp.status_code >= 400:
+                body_bytes = await resp.aread()
+                try:
+                    body: Any = json.loads(body_bytes)
+                except Exception:
+                    body = body_bytes.decode("utf-8", errors="replace")
+                raise ArchetypeError(resp.status_code, body)
+            current_meta: dict[str, str] = {}
+            data_lines: list[str] = []
+            try:
+                async for line in resp.aiter_lines():
+                    if line == "":
+                        if data_lines:
+                            data = "\n".join(data_lines)
+                            try:
+                                parsed: Any = json.loads(data)
+                            except Exception:
+                                parsed = data
+                            evt: dict[str, Any] = {"data": parsed}
+                            if "event" in current_meta:
+                                evt["event"] = current_meta["event"]
+                            if "id" in current_meta:
+                                evt["id"] = current_meta["id"]
+                                last_event_id = current_meta["id"]
+                            events.append(evt)
+                        current_meta = {}
+                        data_lines = []
+                        if len(events) >= max_events:
+                            break
+                        if time.monotonic() >= deadline:
+                            break
+                        continue
+                    if line.startswith(":"):
+                        continue
+                    field, _, value = line.partition(":")
+                    if value.startswith(" "):
+                        value = value[1:]
+                    if field == "data":
+                        data_lines.append(value)
+                    elif field in ("event", "id", "retry"):
+                        current_meta[field] = value
+                    if time.monotonic() >= deadline:
+                        break
+            except httpx.ReadTimeout:
+                pass
+        return {
+            "events": events,
+            "count": len(events),
+            "last_event_id": last_event_id,
+            "max_events_reached": len(events) >= max_events,
+        }
 
     async def download_file(self, file_id: str, dest_path: str) -> dict[str, Any]:
         dest = Path(dest_path).expanduser().resolve()
