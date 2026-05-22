@@ -40,11 +40,13 @@ runs the full workflow in the correct order in one call:
    elapses, or the server sends `sse.stream.end`
 6. Destroys the session
 
-Use this whenever you have an uploaded video and a vision lens
-(Activity Monitor: `lns-fd669361822b07e2-bc608aa3fdf8b4f9`). For other
-input types (RTSP cameras, CSV time-series, sensor streams) or
-long-running sessions where you need fine-grained control, fall back
-to the primitives below.
+Use this whenever you have an uploaded video and a vision lens —
+Activity Monitor C2.5 (`lns-1286e5d1d1b84a77-af311d579cc14869`, backed by
+`Newton::c2_5_8b_260413b723a9ab`) is the current recommendation; the
+older `lns-fd669361822b07e2-bc608aa3fdf8b4f9` (`Newton::c2_4_7b_…`) still
+works if you need it. For other input types (RTSP cameras, CSV
+time-series, sensor streams) or long-running sessions where you need
+fine-grained control, fall back to the primitives below.
 
 ### Lens session output channels — two paths, pick the right one
 
@@ -245,17 +247,69 @@ batch_job_outputs("<job id>")  # presigned URLs, refresh as they expire
 
 ### Video analysis (one-call composite)
 
-```
+```python
+# 1. Upload the video. `file_id` is the filename returned in the response;
+#    the lens stream config takes that, NOT the UUID-style `file_uid`.
 files_upload("/path/to/Ring_Dashcam_Traffic.mp4")
+# {"is_valid": true,
+#  "file_id": "Ring_Dashcam_Traffic.mp4",
+#  "file_uid": "fil_32b6x7g3nt8q4vwmnf73rc9cqb"}
+
+# 2. Run the lens. One call. Creates session, binds the SSE writer
+#    (built-in lenses ship with none), connects the consumer, fires
+#    input_stream.set, drains, destroys.
 lens_session_run_video(
-  file_id="Ring_Dashcam_Traffic.mp4",   # filename, not file_uid
-  lens_id="lns-fd669361822b07e2-bc608aa3fdf8b4f9",  # Activity Monitor
+  file_id="Ring_Dashcam_Traffic.mp4",
+  lens_id="lns-1286e5d1d1b84a77-af311d579cc14869",  # Activity Monitor C2.5
   max_outputs=20,
   max_wait_sec=120,
 )
-# Returns {outputs: [...], count: N, ...}; one event per N seconds of
-# video, each with a natural-language description in response[0].
 ```
+
+The response shape:
+
+```python
+{
+  "session_id": "lsn-...",          # session was created and destroyed for you
+  "lens_id": "lns-1286e5d1d1...",
+  "file_id": "Ring_Dashcam_Traffic.mp4",
+  "outputs": [                       # SSE envelope frames filtered out;
+    {"type": "stream.start", ...},   # lens-emitted events kept as-is
+    {"type": "inference.reset", ...},
+    {"type": "inference.start", ...},
+    {"type": "inference.result",
+     "event_data": {
+       "response": [
+         "The video is a dashcam recording from a vehicle driving on a sunny day. "
+         "The road is multi-lane with moderate traffic, including cars and a white "
+         "van ahead. Trees, palm trees, and other vegetation line the sides..."
+       ],
+       "query_id": "qry-...", "query_time_sec": 4.21, "sensor_timestamp": "00:00:04",
+       ...
+     }},
+    ...
+  ],
+  "count": 11,
+  "max_outputs_reached": False,      # True if you hit the cap before sse.stream.end
+  "sse_stream_started": True,
+  "sse_stream_ended": True,          # server signaled end-of-stream
+  "output_stream_response": {"type": "output_stream.set.response", ...},
+  "input_stream_response":  {"type": "input_stream.set.response",  ...},
+}
+```
+
+**Timing for the example above:** Activity Monitor C2.5 emits one
+`inference.result` per 5 seconds of video (the lens's `camera_buffer_size`
+and `camera_buffer_step_size` parameters control this — see
+[`lens-processors`](https://docs.archetypeai.app/core-concepts/lenses/lens-processors)).
+A ~24-second clip yields 4 results in ~89 seconds wall-clock. Bump
+`max_wait_sec` for longer videos; the lens runs to completion or until
+the cap, whichever comes first.
+
+**Filtering tip:** the LLM usually only cares about
+`type == "inference.result"` events; the others (`stream.start`,
+`inference.reset`, `inference.start`, `stream.end`) are lifecycle markers
+that are useful for debugging timing but noise for the answer.
 
 ### Real-time lens session (manual orchestration)
 
