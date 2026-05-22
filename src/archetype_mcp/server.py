@@ -169,11 +169,31 @@ async def files_upload_abort(upload_id: str) -> Any:
 
 @mcp.tool()
 async def lens_register(lens_config: dict[str, Any]) -> Any:
-    """Register a new lens (inference pipeline) from a config object.
+    """Register a new lens (inference pipeline). Returns `lens_id` (prefixed "lns-...").
 
-    `lens_config` must include `lens_name`. Optional: `model_pipeline` (processor
-    configs) and `model_parameters` (model settings).
-    Returns `lens_id` (prefixed "lns-...").
+    `lens_config` accepts:
+
+    - `lens_name` (required) — human-readable name
+    - `model_pipeline` — list of processor configs. Each entry is
+      `{processor_name, processor_config}`. Common processors:
+      `lens_camera_processor` (video frames), `lens_timeseries_state_processor`
+      (CSV time-series), `lens_sensor_logs_processor` (sensor JSONL).
+    - `model_parameters` — model settings: `model_version` (e.g.
+      `"Newton::c2_4_7b_251215a172f6d7"`), `instruction`, `focus`,
+      `template_name`, `max_new_tokens`, etc.
+    - `input_streams` — bind input(s) to the lens at registration time so
+      every session inherits them. Each entry is `{stream_type, stream_config}`;
+      see `lens_session_send_event` for the valid stream_type values.
+    - `output_streams` — bind output(s); typically
+      `[{"stream_type": "server_sent_events_writer"}]` so results flow to the
+      SSE consumer (use `lens_session_consume` to read them) or the WebSocket
+      mailbox writer for `lens_session_poll_read`.
+
+    Lenses are immutable once registered. To change inputs/outputs for an
+    existing built-in lens (like Activity Monitor) either clone+modify
+    (`lens_clone` then `lens_modify`) or set them per-session via
+    `lens_session_send_event` with an `input_stream.set` / `output_stream.set`
+    event.
     """
     return await _c().request("POST", "/lens/register", json={"lens_config": lens_config})
 
@@ -191,11 +211,17 @@ async def lens_session_create(lens_id: str) -> Any:
 
 @mcp.tool()
 async def lens_session_process_event(session_id: str, event: dict[str, Any]) -> Any:
-    """Send a single inline data event to a running lens session.
+    """Send a single event to a lens session over REST (no WebSocket required).
 
-    `event` must include a `type` field (and typically an `event_data` payload).
-    Use this for short-lived synchronous pushes; for high-rate streaming,
-    connect directly to the session_endpoint WebSocket from your own code.
+    `event` must include a `type` field (and typically `event_data`). Accepts
+    the same event types as `lens_session_send_event` (see that tool's
+    docstring for the full reference of session.* events, input_stream.set
+    stream_types, output_stream.set, and model.query).
+
+    Use this REST variant for one-off setup events (`input_stream.set`,
+    `output_stream.set`) when you don't want to manage a WebSocket. For
+    request-heavy interaction or `session.read` polling, prefer the
+    WebSocket-based `lens_session_send_event` to avoid per-event TCP setup.
     """
     return await _c().request(
         "POST",
@@ -222,17 +248,68 @@ async def lens_session_send_event(
 
     Matches the `send_and_receive_event(socket, event)` pattern from the docs:
     opens a WebSocket to `session_endpoint`, sends `event`, reads exactly one
-    response, closes. Use for any documented event type — `session.status`,
-    `session.validate`, `session.read`, `session.destroy`, `input_stream.set`,
-    `model.query`, etc.
+    response, closes. `event` must include a `type` field. Authenticates via
+    `Authorization: Bearer <API_KEY>` on the WebSocket upgrade.
 
-    `event` must include a `type` field (and typically `event_data`).
-    Authenticates via the standard `Authorization: Bearer <API_KEY>`
-    request header on the WebSocket upgrade.
+    ## Event type reference
 
-    `session.status` returns the full session record directly. Every other
-    event returns `{type: "<event>.response", event_data: {...}}`. When
-    `event_data` would be empty, the server returns it as `null`.
+    ### Session control
+
+    - `session.status` — returns the full session record DIRECTLY (unique
+      shape — does not use the `.response` envelope; this is the one
+      exception)
+    - `session.validate` — health-check; returns `{is_valid, error_messages}`
+    - `session.read` — drains the WebSocket message mailbox. Pass
+      `event_data: {client_id: "<unique-string>"}`. Returns `event_data: null`
+      when the mailbox is empty. NOTE: only works for lenses with mailbox-
+      style outputs; for lenses using `server_sent_events_writer` output, use
+      `lens_session_consume` instead — `session.read` will keep returning
+      `null` forever even while the SSE channel is emitting frames.
+    - `session.destroy` — destroys the session through the WS channel
+
+    ### Input streams (`input_stream.set`)
+
+    Configure where the session pulls inputs from. Pass
+    `event_data: {stream_type: <type>, stream_config: {...}}`. Valid types:
+
+    - `video_file_reader` — `stream_config: {file_id: "<filename>"}`. Replays
+      a previously-uploaded video (`POST /files`). `file_id` is the
+      filename-style value returned by upload (e.g. `"my_video.mp4"`), NOT
+      the UUID-style `file_uid` that appears alongside it.
+    - `csv_file_reader` — `stream_config: {file_id: "<filename>"}`. Same
+      file_id semantics as the video reader.
+    - `rtsp_video_streamer` — `stream_config: {rtsp_url, target_image_size:
+      [H, W], target_frame_rate_hz}`. For live RTSP cameras.
+    - `sensor_streamer` — configuration is sensor-type specific.
+
+    ### Output streams (`output_stream.set`)
+
+    Configure where the session writes outputs. Pass
+    `event_data: {stream_type, stream_config: {}}`. Common type:
+    `server_sent_events_writer` (which `lens_session_consume` reads from).
+    Built-in lenses (Activity Monitor, Machine State) already have outputs
+    wired at registration time — only set this if you need to override.
+
+    ### Direct queries (`model.query`)
+
+    One-shot inference. Pass an `event_data` object with `model_version`,
+    `template_name`, `instruction`, `focus`, `max_new_tokens`, and `data`
+    (e.g. `[{"type": "base64_img", "base64_img": "<b64>"}]`).
+
+    Known template names: `image_qa_template_task` (natural-language image
+    description), `image_bbox_template_task` (object detection with bboxes).
+
+    `model.query` only works on lenses that include a model-query processor.
+    Activity Monitor (`lens_camera_processor`) and Machine State
+    (`lens_timeseries_state_processor`) expect inputs via `input_stream.set`
+    and will return `{type: "model.query.response", message: "Response timed
+    out for query"}` instead.
+
+    ## Response envelope
+
+    Every event except `session.status` returns
+    `{type: "<event>.response", event_data: {...}}`. When `event_data` would
+    be empty, the server returns it as `null`.
     """
     return await _c().send_session_websocket_event(
         session_endpoint, event, timeout_sec
