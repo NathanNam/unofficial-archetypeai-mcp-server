@@ -780,6 +780,147 @@ async def batch_pipeline_schema(pipeline_id: str) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Batch Processing API — one-call composites (submit + poll + outputs)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def batch_run_machine_state_classification(
+    inference_file_ids: list[str],
+    n_shots: list[dict[str, Any]],
+    data_columns: list[str],
+    timestamp_column: str = "timestamp",
+    window_size: int = 128,
+    step_size: int = 1,
+    n_neighbors: int = 11,
+    metric: str = "euclidean",
+    weights: str = "uniform",
+    model_type: str = "omega_1_4_base",
+    normalize_embeddings: bool = False,
+    batch_size: int = 32,
+    flush_every_n_iteration: int = 150,
+    parallelism: int = 1,
+    name: str | None = None,
+    max_wait_sec: float = 900.0,
+    poll_interval_sec: float = 5.0,
+) -> dict[str, Any]:
+    """Classify time-series CSV(s) via n-shot KNN over Omega embeddings.
+
+    THIS is the canonical Archetype path for "classify time-series against
+    labeled references" tasks (e.g. healthy / degraded bearing detection from
+    vibration sensors). Wraps the `machine-state-classification` batch
+    pipeline as a single tool call: submits the job, polls until terminal,
+    and returns predictions plus job metadata.
+
+    Inputs:
+      - `inference_file_ids`: list of uploaded file_ids (filenames returned
+        by `files_upload`) to classify.
+      - `n_shots`: list of `{"file_id": ..., "class_label": ...}` reference
+        files. Each becomes a class anchor — the lens uses KNN against their
+        embeddings to label each window of the inference file.
+      - `data_columns`: list of numeric column names in the CSVs to embed
+        (e.g. `["bearing_1","bearing_2","bearing_3","bearing_4"]`).
+
+    Defaults match the optimized config from
+    `archetype-batch-examples-nasa-bearing` (window 128, step 1, k=11,
+    euclidean, uniform weights, omega_1_4_base). Override per dataset.
+
+    When to use this vs. other tools:
+      - "Classify time-series with labeled references" → THIS tool.
+      - "Describe a video" → `lens_session_run_video`.
+      - "Generate text/narratives from JSONL data at scale" →
+        `batch_run_activity_detection`.
+      - "One-shot question to a Newton model" → `query`.
+
+    Returns a job summary including `status`, `outputs` (with presigned
+    URLs you can download — they expire), `events` (last N), and
+    `timed_out: true` if `max_wait_sec` elapsed before the job finished
+    (job continues server-side; re-poll with `batch_job_get`). Outputs are
+    a JSONL-like file: one record per inference window with the predicted
+    class and confidence.
+    """
+    return await _c().run_batch_machine_state_classification(
+        inference_file_ids=inference_file_ids,
+        n_shots=n_shots,
+        data_columns=data_columns,
+        timestamp_column=timestamp_column,
+        window_size=window_size,
+        step_size=step_size,
+        n_neighbors=n_neighbors,
+        metric=metric,
+        weights=weights,
+        model_type=model_type,
+        normalize_embeddings=normalize_embeddings,
+        batch_size=batch_size,
+        flush_every_n_iteration=flush_every_n_iteration,
+        parallelism=parallelism,
+        name=name,
+        max_wait_sec=max_wait_sec,
+        poll_interval_sec=poll_interval_sec,
+    )
+
+
+@mcp.tool()
+async def batch_run_activity_detection(
+    data_file_ids: list[str],
+    model_variant: str = "newton/c:2.5.1-8b-base",
+    max_video_frames: int = 32,
+    max_new_tokens: int = 256,
+    temperature: float = 0.7,
+    top_p: float = 0.8,
+    top_k: int = 20,
+    repetition_penalty: float = 1.0,
+    do_sample: bool = True,
+    parallelism: int = 1,
+    name: str | None = None,
+    max_wait_sec: float = 900.0,
+    poll_interval_sec: float = 5.0,
+) -> dict[str, Any]:
+    """Generate narratives/analysis on JSONL data via the activity-detection batch pipeline.
+
+    Wraps the `activity-detection` batch pipeline as a single tool call:
+    submits, polls, returns outputs.
+
+    Use this for "generate text/analysis over a large JSONL dataset" tasks —
+    log narrative summarization, structured extraction over many records,
+    map-reduce style text generation. Each line of the input JSONL becomes
+    one inference and the model emits a generated response.
+
+    `data_file_ids` must be uploaded JSONL files (one record per line).
+
+    When to use this vs. other tools:
+      - "Classify time-series with labeled references" →
+        `batch_run_machine_state_classification`.
+      - "Describe a video" → `lens_session_run_video`.
+      - "Generate text from log/csv data at scale" → THIS tool.
+      - "One-shot Newton question on a small input" → `query`.
+
+    Default `model_variant` is `newton/c:2.5.1-8b-base`. Other supported
+    variants: `newton/c:2.3.0-7b-base`, `newton/c:2.4.0-7b-base`,
+    `newton/c:2.5.0-8b-base`.
+
+    Returns the same shape as `batch_run_machine_state_classification`:
+    job summary with `status`, `outputs` (presigned URLs), `events`, and
+    `timed_out` flag.
+    """
+    return await _c().run_batch_activity_detection(
+        data_file_ids=data_file_ids,
+        model_variant=model_variant,
+        max_video_frames=max_video_frames,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        repetition_penalty=repetition_penalty,
+        do_sample=do_sample,
+        parallelism=parallelism,
+        name=name,
+        max_wait_sec=max_wait_sec,
+        poll_interval_sec=poll_interval_sec,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Fine-tune API — train custom models on uploaded datasets
 # ---------------------------------------------------------------------------
 

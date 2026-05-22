@@ -424,6 +424,166 @@ class ArchetypeClient:
             "input_stream_response": input_resp,
         }
 
+    async def _run_batch_job(
+        self,
+        payload: dict[str, Any],
+        max_wait_sec: float = 600.0,
+        poll_interval_sec: float = 5.0,
+        include_events: int = 50,
+    ) -> dict[str, Any]:
+        import asyncio
+
+        job = await self.request("POST", "/batch/jobs", json=payload)
+        job_id = job["id"]
+        terminal = {"COMPLETED", "FAILED", "CANCELLED"}
+        deadline = time.monotonic() + max_wait_sec
+        timed_out = False
+        while True:
+            if job["status"] in terminal:
+                break
+            if time.monotonic() >= deadline:
+                timed_out = True
+                break
+            await asyncio.sleep(poll_interval_sec)
+            job = await self.request("GET", f"/batch/jobs/{job_id}")
+        outputs: Any = None
+        if job["status"] == "COMPLETED":
+            try:
+                outputs = await self.request("GET", f"/batch/jobs/{job_id}/outputs")
+            except Exception:
+                outputs = None
+        events: Any = []
+        if include_events > 0:
+            try:
+                ev_resp = await self.request(
+                    "GET",
+                    f"/batch/jobs/{job_id}/events",
+                    params={"limit": include_events},
+                )
+                events = ev_resp.get("events", []) if isinstance(ev_resp, dict) else []
+            except Exception:
+                events = []
+        return {
+            "job_id": job_id,
+            "status": job["status"],
+            "pipeline_key": job.get("pipeline_key"),
+            "pipeline_version": job.get("pipeline_version"),
+            "queue_position": job.get("queue_position"),
+            "queue_depth": job.get("queue_depth"),
+            "created_at": job.get("created_at"),
+            "started_at": job.get("started_at"),
+            "completed_at": job.get("completed_at"),
+            "failed_at": job.get("failed_at"),
+            "cancelled_at": job.get("cancelled_at"),
+            "error": job.get("error"),
+            "outputs": outputs,
+            "events": events,
+            "timed_out": timed_out,
+        }
+
+    async def run_batch_machine_state_classification(
+        self,
+        inference_file_ids: list[str],
+        n_shots: list[dict[str, Any]],
+        data_columns: list[str],
+        timestamp_column: str = "timestamp",
+        window_size: int = 128,
+        step_size: int = 1,
+        n_neighbors: int = 11,
+        metric: str = "euclidean",
+        weights: str = "uniform",
+        model_type: str = "omega_1_4_base",
+        normalize_embeddings: bool = False,
+        batch_size: int = 32,
+        flush_every_n_iteration: int = 150,
+        parallelism: int = 1,
+        name: str | None = None,
+        max_wait_sec: float = 900.0,
+        poll_interval_sec: float = 5.0,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "name": name or "machine-state-classification",
+            "pipeline_type": "batch",
+            "pipeline_key": "machine-state-classification",
+            "inputs": {
+                "worker.inference": [{"file_id": fid} for fid in inference_file_ids],
+                "worker.n_shots": [
+                    {"file_id": s["file_id"], "metadata": {"class": s["class_label"]}}
+                    for s in n_shots
+                ],
+            },
+            "parameters": {
+                "worker": {
+                    "parallelism": parallelism,
+                    "config": {
+                        "batch_size": batch_size,
+                        "classifier_config": {
+                            "metric": metric,
+                            "n_neighbors": n_neighbors,
+                            "normalize_embeddings": normalize_embeddings,
+                            "weights": weights,
+                        },
+                        "flush_every_n_iteration": flush_every_n_iteration,
+                        "model_type": model_type,
+                        "reader_config": {
+                            "data_columns": data_columns,
+                            "step_size": step_size,
+                            "timestamp_column": timestamp_column,
+                            "window_size": window_size,
+                        },
+                    },
+                }
+            },
+        }
+        return await self._run_batch_job(
+            payload, max_wait_sec=max_wait_sec, poll_interval_sec=poll_interval_sec
+        )
+
+    async def run_batch_activity_detection(
+        self,
+        data_file_ids: list[str],
+        model_variant: str = "newton/c:2.5.1-8b-base",
+        max_video_frames: int = 32,
+        max_new_tokens: int = 256,
+        temperature: float = 0.7,
+        top_p: float = 0.8,
+        top_k: int = 20,
+        repetition_penalty: float = 1.0,
+        do_sample: bool = True,
+        parallelism: int = 1,
+        name: str | None = None,
+        max_wait_sec: float = 900.0,
+        poll_interval_sec: float = 5.0,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "name": name or "activity-detection",
+            "pipeline_type": "batch",
+            "pipeline_key": "activity-detection",
+            "inputs": {
+                "worker.data": [{"file_id": fid} for fid in data_file_ids],
+            },
+            "parameters": {
+                "worker": {
+                    "parallelism": parallelism,
+                    "config": {
+                        "model_variant": model_variant,
+                        "max_video_frames": max_video_frames,
+                        "generation": {
+                            "max_new_tokens": max_new_tokens,
+                            "temperature": temperature,
+                            "top_p": top_p,
+                            "top_k": top_k,
+                            "repetition_penalty": repetition_penalty,
+                            "do_sample": do_sample,
+                        },
+                    },
+                }
+            },
+        }
+        return await self._run_batch_job(
+            payload, max_wait_sec=max_wait_sec, poll_interval_sec=poll_interval_sec
+        )
+
     async def download_file(self, file_id: str, dest_path: str) -> dict[str, Any]:
         dest = Path(dest_path).expanduser().resolve()
         dest.parent.mkdir(parents=True, exist_ok=True)
