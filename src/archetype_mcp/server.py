@@ -241,33 +241,65 @@ async def lens_session_send_event(
 
 @mcp.tool()
 async def lens_session_consume(
+    session_id: str,
+    max_events: int = 50,
+    max_wait_sec: float = 30.0,
+    since_event_id: str | None = None,
+    include_heartbeats: bool = False,
+) -> dict[str, Any]:
+    """Consume the lens session's SSE output stream.
+
+    Opens `GET /lens/sessions/consumer/{session_id}` and bounded-collects
+    events written by lens output processors of type `server_sent_events_writer`
+    — the route used by Activity Monitor and most cookbook lenses for
+    inference results. This matches `lens.create_sse_consumer()` in the
+    official Python SDK.
+
+    Distinct channel from the WebSocket `session.read` mailbox: if your
+    lens writes outputs to one, they do not appear on the other. If this
+    tool returns no events but `lens_sessions_metadata` shows non-zero
+    `num_outputs`, try `lens_session_poll_read` instead.
+
+    `sse.stream.heartbeat` envelope events are filtered out by default;
+    set `include_heartbeats=True` to keep them. An `sse.stream.end` event
+    means the server closed the stream — it is included in `events` and
+    `stream_ended` is set true.
+
+    Pass `since_event_id` (from a previous call's `last_event_id`) as a
+    cursor — sent as the standard `Last-Event-ID` request header.
+    """
+    return await _c().consume_session_sse(
+        session_id, max_events, max_wait_sec, since_event_id, include_heartbeats
+    )
+
+
+@mcp.tool()
+async def lens_session_poll_read(
     session_endpoint: str,
     client_id: str | None = None,
     max_messages: int = 50,
     max_wait_sec: float = 30.0,
     poll_interval_sec: float = 2.0,
 ) -> dict[str, Any]:
-    """Drain pending async messages from a lens session via `session.read`.
+    """Drain a lens session's WebSocket message mailbox via `session.read`.
 
     Opens a WebSocket to `session_endpoint` and repeatedly sends
-    `{"type": "session.read", "event_data": {"client_id": <id>}}` events,
+    `{"type": "session.read", "event_data": {"client_id": <id>}}`,
     aggregating the `messages` from each response (inference.result,
-    log.info, frame.processed, stream.status, error, etc.) until `max_messages`
-    is reached or `max_wait_sec` elapses.
+    log.info, frame.processed, stream.status, error, etc.) until
+    `max_messages` is reached or `max_wait_sec` elapses.
+
+    Distinct channel from the SSE consumer: if your lens uses
+    `server_sent_events_writer` for outputs (Activity Monitor, most
+    cookbook lenses), use `lens_session_consume` instead — those outputs
+    never appear in `session.read` responses.
 
     Pass the same `client_id` across calls to preserve message stream
     playback position; pass `None` to generate a fresh client_id (which
     resets playback). Between empty polls, the tool sleeps
     `poll_interval_sec` before sending the next `session.read`.
-
-    Returns:
-        messages: list of received message objects (each typically has
-                  timestamp / type / data fields)
-        count: number of messages returned
-        client_id: the client_id used (echoed for the next call)
-        max_messages_reached: true if we stopped because of max_messages
     """
-    return await _c().consume_session_websocket(
+    return await _c().poll_session_read(
         session_endpoint,
         client_id,
         max_messages,
