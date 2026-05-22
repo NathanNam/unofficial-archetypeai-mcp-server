@@ -227,8 +227,8 @@ async def lens_session_send_event(
     `model.query`, etc.
 
     `event` must include a `type` field (and typically `event_data`).
-    Authenticates via Sec-WebSocket-Protocol subprotocols
-    (`authenticationauthorization.bearer.<API_KEY>` + `event-protocol-v1`).
+    Authenticates via the standard `Authorization: Bearer <API_KEY>`
+    request header on the WebSocket upgrade.
 
     `session.status` returns the full session record directly. Every other
     event returns `{type: "<event>.response", event_data: {...}}`. When

@@ -51,8 +51,10 @@ gets exactly one `<event>.response` reply, no unsolicited push.
   generic RPC primitive. Opens a WebSocket, sends one event, reads one
   response, closes. Use for `session.status`, `session.validate`,
   `input_stream.set`, `model.query`, `session.destroy`, etc. Authenticates
-  via `Sec-WebSocket-Protocol` subprotocols
-  (`authenticationauthorization.bearer.<API_KEY>` + `event-protocol-v1`).
+  via the standard `Authorization: Bearer <API_KEY>` request header on
+  the WebSocket upgrade — the same pattern the Python SDK uses. (The
+  server also accepts `Sec-WebSocket-Protocol` subprotocol auth, but only
+  browser clients need that workaround.)
 
 For true real-time push or many events on a single long-lived connection,
 connect to the WebSocket directly from your own code — both `send_event`

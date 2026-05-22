@@ -107,12 +107,10 @@ class ArchetypeClient:
     def _open_session_websocket(self, session_endpoint: str) -> Any:
         import websockets
 
-        subprotocols = [
-            f"authenticationauthorization.bearer.{self._api_key}",
-            "event-protocol-v1",
-        ]
         return websockets.connect(
-            session_endpoint, subprotocols=subprotocols, open_timeout=10.0
+            session_endpoint,
+            additional_headers={"Authorization": f"Bearer {self._api_key}"},
+            open_timeout=10.0,
         )
 
     async def send_session_websocket_event(
