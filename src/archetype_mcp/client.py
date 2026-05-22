@@ -584,6 +584,90 @@ class ArchetypeClient:
             payload, max_wait_sec=max_wait_sec, poll_interval_sec=poll_interval_sec
         )
 
+    async def download_batch_outputs(
+        self,
+        job_id: str,
+        dest_dir: str | None = None,
+        max_preview_lines: int = 50,
+        max_outputs: int | None = None,
+    ) -> dict[str, Any]:
+        import tempfile
+        from urllib.parse import urlparse
+
+        outs_resp = await self.request("GET", f"/batch/jobs/{job_id}/outputs")
+        if not isinstance(outs_resp, dict):
+            return {"job_id": job_id, "outputs": [], "error": "unexpected response"}
+        outputs = outs_resp.get("outputs") or []
+        if max_outputs is not None:
+            outputs = outputs[:max_outputs]
+
+        if dest_dir is None:
+            dest_dir = tempfile.mkdtemp(prefix=f"atai-batch-{job_id[:16]}-")
+        dest_path = Path(dest_dir).expanduser().resolve()
+        dest_path.mkdir(parents=True, exist_ok=True)
+
+        results: list[dict[str, Any]] = []
+        # Separate client — no auth header, no base URL. Presigned URLs
+        # carry their own auth and S3 rejects extra headers.
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0), follow_redirects=True) as anon:
+            for o in outputs:
+                rec: dict[str, Any] = {
+                    "id": o.get("id"),
+                    "input_file_id": o.get("input_file_id"),
+                    "port_name": o.get("port_name"),
+                }
+                data = o.get("data") or {}
+                url = data.get("ref")
+                if not url:
+                    rec["error"] = "no presigned ref"
+                    results.append(rec)
+                    continue
+                parsed = urlparse(url)
+                fname = Path(parsed.path).name or f"{rec['id']}.bin"
+                local = dest_path / fname
+                bytes_written = 0
+                try:
+                    async with anon.stream("GET", url) as resp:
+                        if resp.status_code >= 400:
+                            body = await resp.aread()
+                            rec["error"] = (
+                                f"HTTP {resp.status_code}: "
+                                + body.decode("utf-8", errors="replace")[:300]
+                            )
+                            results.append(rec)
+                            continue
+                        with local.open("wb") as fh:
+                            async for chunk in resp.aiter_bytes(chunk_size=1 << 20):
+                                fh.write(chunk)
+                                bytes_written += len(chunk)
+                except Exception as e:
+                    rec["error"] = f"{type(e).__name__}: {e}"
+                    results.append(rec)
+                    continue
+
+                rec["local_path"] = str(local)
+                rec["bytes_written"] = bytes_written
+
+                preview_lines: list[str] = []
+                if max_preview_lines > 0:
+                    try:
+                        with local.open("r", errors="replace") as fh:
+                            for i, line in enumerate(fh):
+                                if i >= max_preview_lines:
+                                    break
+                                preview_lines.append(line.rstrip("\n"))
+                    except Exception:
+                        pass
+                rec["preview_lines"] = preview_lines
+                results.append(rec)
+
+        return {
+            "job_id": job_id,
+            "dest_dir": str(dest_path),
+            "count": len(results),
+            "outputs": results,
+        }
+
     async def download_file(self, file_id: str, dest_path: str) -> dict[str, Any]:
         dest = Path(dest_path).expanduser().resolve()
         dest.parent.mkdir(parents=True, exist_ok=True)

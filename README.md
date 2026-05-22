@@ -11,9 +11,9 @@ AI. It wraps the public REST API documented at
 
 ## What it gives you
 
-55 tools covering every documented REST endpoint, both lens session
-output channels (WebSocket and SSE), and **three high-level composites
-that handle the most common end-to-end flows in a single call**.
+56 tools covering every documented REST endpoint, both lens session
+output channels (WebSocket and SSE), and **high-level composites that
+handle the most common end-to-end flows in a single call**.
 
 | Group | Tools |
 | --- | --- |
@@ -22,7 +22,7 @@ that handle the most common end-to-end flows in a single call**.
 | Query (1) | `query` |
 | Batch jobs (14) | `batch_job_create`, `batch_job_list`, `batch_job_get`, `batch_job_cancel`, `batch_job_retry`, `batch_job_delete`, `batch_job_events`, `batch_job_progress`, `batch_job_inputs`, `batch_job_inputs_progress`, `batch_job_inputs_progress_counts`, `batch_job_inputs_progress_traces`, `batch_job_outputs`, `batch_queue` |
 | Batch registry (3) | `batch_pipeline_list`, `batch_pipeline_get`, `batch_pipeline_schema` |
-| Batch composites (2) | `batch_run_machine_state_classification`, `batch_run_activity_detection` |
+| Batch composites (3) | `batch_run_machine_state_classification`, `batch_run_activity_detection`, `batch_download_outputs` |
 | Fine-tune (8) | `finetune_job_create`, `finetune_job_get`, `finetune_job_list`, `finetune_job_cancel`, `finetune_job_stop`, `finetune_job_delete`, `finetune_job_metrics`, `finetune_node_status` |
 
 ### Choosing the right tool
@@ -270,8 +270,31 @@ batch_run_machine_state_classification(
 `batch_run_activity_detection(data_file_ids=[...])` does the same for the
 `activity-detection` pipeline (text-in / text-out at scale over JSONL).
 
+The composites return job metadata and a list of output entries; each
+`outputs[*].data.ref` is a **presigned S3 URL** (~20 min TTL) — direct
+storage links, not Archetype endpoints. Use **`batch_download_outputs`**
+to fetch them to disk and get an inline content preview:
+
+```python
+batch_download_outputs(job_id="job_5xq09fa6b29dxtxa4nxd69jgds")
+# {
+#   "dest_dir": "/tmp/atai-batch-job_5xq09fa6b29d-...",
+#   "count": 1,
+#   "outputs": [{
+#     "input_file_id": "bearing_opt_slice.csv",
+#     "local_path": ".../output_bearing_opt_slice_0001.csv",
+#     "bytes_written": 720122,
+#     "preview_lines": ["timestamp,Prediction", "16363520,degraded", ...]
+#   }]
+# }
+```
+
+`files_download` does NOT work for batch outputs — that endpoint is for
+files uploaded via `files_upload` and uses a different URL space.
+
 If you need fine-grained control, fall back to the primitives:
-`batch_job_create` + `batch_job_get` + `batch_job_outputs`.
+`batch_job_create` + `batch_job_get` + `batch_job_outputs`
++ download the `outputs[*].data.ref` URLs yourself.
 
 ### Video analysis (one-call composite)
 
