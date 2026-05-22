@@ -40,11 +40,13 @@ runs the full workflow in the correct order in one call:
    elapses, or the server sends `sse.stream.end`
 6. Destroys the session
 
-Use this whenever you have an uploaded video and a vision lens
-(Activity Monitor: `lns-fd669361822b07e2-bc608aa3fdf8b4f9`). For other
-input types (RTSP cameras, CSV time-series, sensor streams) or
-long-running sessions where you need fine-grained control, fall back
-to the primitives below.
+Use this whenever you have an uploaded video and a vision lens —
+Activity Monitor C2.5 (`lns-1286e5d1d1b84a77-af311d579cc14869`, backed by
+`Newton::c2_5_8b_260413b723a9ab`) is the current recommendation; the
+older `lns-fd669361822b07e2-bc608aa3fdf8b4f9` (`Newton::c2_4_7b_…`) still
+works if you need it. For other input types (RTSP cameras, CSV
+time-series, sensor streams) or long-running sessions where you need
+fine-grained control, fall back to the primitives below.
 
 ### Lens session output channels — two paths, pick the right one
 
@@ -249,7 +251,7 @@ batch_job_outputs("<job id>")  # presigned URLs, refresh as they expire
 files_upload("/path/to/Ring_Dashcam_Traffic.mp4")
 lens_session_run_video(
   file_id="Ring_Dashcam_Traffic.mp4",   # filename, not file_uid
-  lens_id="lns-fd669361822b07e2-bc608aa3fdf8b4f9",  # Activity Monitor
+  lens_id="lns-1286e5d1d1b84a77-af311d579cc14869",  # Activity Monitor C2.5
   max_outputs=20,
   max_wait_sec=120,
 )
