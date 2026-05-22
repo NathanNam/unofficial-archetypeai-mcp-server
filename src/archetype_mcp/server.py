@@ -239,6 +239,59 @@ async def lens_session_destroy(session_id: str) -> Any:
 
 
 @mcp.tool()
+async def lens_session_run_video(
+    file_id: str,
+    lens_id: str,
+    max_outputs: int = 20,
+    max_wait_sec: float = 120.0,
+) -> dict[str, Any]:
+    """Run an uploaded video through a lens and collect inference outputs.
+
+    One-shot, end-to-end. Use this for "describe this video" style tasks
+    against video lenses like Activity Monitor
+    (`lns-fd669361822b07e2-bc608aa3fdf8b4f9`).
+
+    Internally orchestrates the full workflow in the correct order so
+    outputs are not lost to the SSE-live-only race condition:
+
+    1. Creates a session for `lens_id`
+    2. Opens the SSE consumer FIRST and waits for `sse.stream.start`
+    3. Sends `input_stream.set` with
+       `stream_type=video_file_reader`, `stream_config.file_id=<file_id>`
+    4. Drains the SSE stream until any of: `max_outputs` inference events
+       collected, `max_wait_sec` elapsed, `sse.stream.end` received
+    5. Destroys the session
+
+    Why this exists: SSE-routed lenses emit results live; if you open the
+    SSE consumer after the lens has already finished, those outputs are
+    gone. Sequential MCP calls (`set input` → `then read output`) can race
+    the lens on short videos. This tool keeps the consumer open across the
+    input-set call so nothing is missed.
+
+    `file_id` is the filename-style id returned by `files_upload`
+    (e.g. `"Ring_Dashcam_Traffic.mp4"`), not the UUID-style `file_uid`.
+
+    For non-video inputs (CSV time-series, RTSP cameras, live sensors) or
+    long-running sessions where you want fine-grained control, fall back to
+    the primitives: `lens_session_create` + `lens_session_send_event`
+    (`input_stream.set`) + `lens_session_consume` / `lens_session_poll_read`
+    + `lens_session_destroy`.
+
+    Returns:
+        outputs: list of inference event payloads (envelope events
+                 `sse.stream.*` are filtered out)
+        count: number of inference events
+        max_outputs_reached: true if we stopped because of max_outputs
+        sse_stream_started / sse_stream_ended: SSE lifecycle flags
+        session_id: id of the (now-destroyed) session
+        input_stream_response: server's reply to the `input_stream.set` event
+    """
+    return await _c().run_session_with_video(
+        lens_id, file_id, max_outputs, max_wait_sec
+    )
+
+
+@mcp.tool()
 async def lens_session_send_event(
     session_endpoint: str,
     event: dict[str, Any],
